@@ -807,7 +807,22 @@ def toggle_status(post_id):
         flash("You must be logged in to update a post.", "danger")
         return redirect(url_for("login"))
 
-    post = query_db("SELECT id, user_id FROM posts WHERE id = ?", (post_id,), one=True)
+    post = query_db(
+        "SELECT id, user_id, post_type FROM posts WHERE id = ?", (post_id,), one=True
+    )
+
+    # Check if the post exists, if the current user is the owner and if the post type is request
+    if not post:
+        flash("Post not found.", "danger")
+        return redirect(url_for("feed"))
+
+    if post["user_id"] != user_id:
+        flash("You can not change status of a post you do not own", "danger")
+        return redirect(url_for("feed"))
+
+    if post["post_type"] != "request":
+        flash("You cannot change the status of a regular type of post", "danger")
+        return redirect(url_for("feed"))
 
     new_status = request.form.get("action", "active")
 
