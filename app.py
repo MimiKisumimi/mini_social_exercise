@@ -219,6 +219,16 @@ def feed():
         )
         post_dict = dict(post)
         post_dict["content"], _ = moderate_content(post_dict["content"])
+        post_dict["is_troll"] = is_troll_post(post_dict["id"])  # For troll marking
+        post_dict["user_marked_troll"] = False
+        if current_user_id:
+            marked = query_db(
+                "SELECT 1 FROM troll_marks WHERE post_id = ? AND user_id = ?",
+                (post_dict["id"], current_user_id),
+                one=True,
+            )
+            if marked:
+                post_dict["user_marked_troll"] = True
         comments_moderated = []
         for comment in comments_raw:
             comment_dict = dict(comment)
@@ -454,6 +464,7 @@ def post_detail(post_id):
     # Unpack the tuple from moderate_content, we only need the moderated content string here
     moderated_post_content, _ = moderate_content(post["content"])
     post["content"] = moderated_post_content
+    post["is_troll"] = is_troll_post(post["id"])  # For troll marking
 
     #  Fetch Reactions (No moderation needed)
     reactions = query_db(
@@ -588,6 +599,11 @@ def add_comment(post_id):
         flash("You must be logged in to comment.", "danger")
         return redirect(url_for("login"))
 
+    # Check if troll post, commenting disabled for troll posts
+    if is_troll_post(post_id):
+        flash("Comments are disabled for troll posts.", "danger")
+        return redirect(request.referrer or url_for("feed"))
+
     # Get content from the submitted form
     content = request.form.get("content")
 
@@ -657,6 +673,11 @@ def add_reaction():
     if not user_id:
         flash("You must be logged in to react.", "danger")
         return redirect(url_for("login"))
+
+    # Check if troll post, reactions are disabled for troll posts
+    if post_id and is_troll_post(post_id):
+        flash("Reactions are disabled for troll posts.", "danger")
+        return redirect(request.referrer or url_for("feed"))
 
     post_id = request.form.get("post_id")
     new_reaction_type = request.form.get("reaction")
@@ -1061,17 +1082,137 @@ def user_risk_analysis(user_id):
         user_id: The ID of the user on which we perform risk analysis.
 
     Returns:
-        A float number score showing the risk associated with this user. There are no strict rules or bounds to this score, other than that a score of less than 1.0 means no risk, 1.0 to 3.0 is low risk, 3.0 to 5.0 is medium risk and above 5.0 is high risk. (An upper bound of 5.0 is applied to this score elsewhere in the codebase)
+        A float number score showing the risk associated with this user. There are no strict rules or bounds to this score,
+        other than that a score of less than 1.0 means no risk, 1.0 to 3.0 is low risk, 3.0 to 5.0 is medium risk and above 5.0 is high risk.
+        (An upper bound of 5.0 is applied to this score elsewhere in the codebase)
 
         You will be able to check the scores by logging in with the administrator account:
             username: admin
             password: admin
         Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
-
     score = 0
 
+    user = query_db(
+        "SELECT profile, created_at FROM users WHERE id = ?", (user_id,), one=True
+    )
+    if not user:
+        return 0.0
+
+    # Profile Score
+    profile_score = 0.0
+    if user["profile"]:
+        profile_score = moderate_content(user["profile"])[1]
+
+    # Post Score
+    posts = query_db("SELECT content FROM posts WHERE user_id = ?", (user_id,))
+    post_score = 0.0
+    average_post_score = 0.0
+    if posts:
+        for post in posts:
+            post_score += moderate_content(post["content"])[1]
+        average_post_score = post_score / len(posts)
+
+    # Comment Score
+    comments = query_db("SELECT content FROM comments WHERE user_id = ?", (user_id,))
+    comment_score = 0.0
+    average_comment_score = 0.0
+    if comments:
+        for comment in comments:
+            comment_score += moderate_content(comment["content"])[1]
+        average_comment_score = comment_score / len(comments)
+
+    # Combine Scores
+    content_risk_score = (
+        (profile_score * 1) + (average_post_score * 3) + (average_comment_score * 1)
+    )
+
+    # Apply Age Multiplier
+    user_created_at = user["created_at"]
+    account_age = (datetime.now() - user_created_at).days
+
+    if account_age < 7:
+        user_risk_score = content_risk_score * 1.5
+    elif account_age < 30:
+        user_risk_score = content_risk_score * 1.2
+    else:
+        user_risk_score = content_risk_score
+
+    score = user_risk_score
+
     return score
+
+
+# Assignment 2: Design claim 7 A widely followed norm of ignoring trolls limits
+# the damage they can do.
+
+# The functionality makes it possible to mark a post as a troll post
+# If one post is marked as troll post by three different users, the comments and reactions
+# are removed and disabled for that post permanently
+# For this delivery I used AI to give me the SQL count query, as well as help me to
+# add logic for the buttons and text in feed.html
+
+
+# Checks if post os already marked as troll post
+def is_troll_post(post_id):
+    count_level = query_db(
+        "SELECT COUNT(DISTINCT user_id) as cnt FROM troll_marks WHERE post_id = ?",
+        (post_id,),
+        one=True,
+    )
+    if count_level and count_level["cnt"] >= 3 and count_level["cnt"] is not None:
+        return True
+    else:
+        return False
+
+
+@app.route("/posts/<int:post_id>/mark_as_troll", methods=["POST"])
+def mark_as_troll(post_id):
+
+    user_id = session.get("user_id")
+    if not user_id:
+        flash("You must be logged in to mark a post.", "danger")
+        return redirect(url_for("login"))
+
+    post = query_db("SELECT id, user_id FROM posts WHERE id = ?", (post_id,), one=True)
+
+    if not post:
+        flash("Post not found.", "danger")
+        return redirect(request.referrer or url_for("feed"))
+
+    if post["user_id"] == user_id:
+        flash("You cannot mark your own post as a troll post.", "warning")
+        return redirect(request.referrer or url_for("feed"))
+
+    # Calls is troll post function check if the post has already been marked 3 times
+    if is_troll_post(post_id):
+        flash("This post has already been marked as a troll post.", "warning")
+        return redirect(request.referrer or url_for("feed"))
+
+    already_marked = query_db(
+        "SELECT id FROM troll_marks WHERE post_id = ? AND user_id = ?",
+        (post_id, user_id),
+        one=True,
+    )
+    # Checks if a user has already marked the post as troll post
+    if already_marked:
+        flash("You have already marked this post as a troll post.", "warning")
+        return redirect(request.referrer or url_for("feed"))
+
+    db = get_db()
+    db.execute(
+        "INSERT INTO troll_marks (post_id, user_id, troll_level) VALUES (?, ?, 1)",
+        (post_id, user_id),
+    )
+    db.commit()
+    if is_troll_post(post_id):
+        db.execute("DELETE FROM comments WHERE post_id = ?", (post_id,))
+        db.execute("DELETE FROM reactions WHERE post_id = ?", (post_id,))
+        db.commit()
+    else:
+        db.commit()
+        flash("Post marked as troll.", "info")
+    return redirect(request.referrer or url_for("feed"))
 
 
 # Assignment 2.1
@@ -1094,7 +1235,7 @@ def moderate_content(content):
     moderated_content = content
     score = 0
 
-    # AI was used to conjure cursed dark magic of regex (To define URL pattern for comparison in URL check)
+    # AI was used to conjure cursed dark magic of regex (To define URL pattern for comparison in URL check and word pattern extraction)
     URL_PATTERN = r'(?:https?://[^\s<>"]+|www\.[^\s<>"]+)'
 
     # Tier 1: Strong profanity check
@@ -1103,6 +1244,7 @@ def moderate_content(content):
         if re.search(pattern, moderated_content, re.IGNORECASE):
             score += 5.0
             moderated_content = "[content removed due to severe violation]"
+            return moderated_content, score
 
     # Tier 2: Scam/Spam phrases check
     for phrase in TIER2_PHRASES:
@@ -1110,19 +1252,25 @@ def moderate_content(content):
         if re.search(pattern, moderated_content, re.IGNORECASE):
             score += 5.0
             moderated_content = "[content removed due to spam/scam policy]"
+            return moderated_content, score
 
     # Tier 3: Mild profanity check
     for word in TIER3_WORDS:
         pattern = rf"\b{re.escape(word)}\b"
-        if re.search(pattern, moderated_content, re.IGNORECASE):
-            score += 2.0
+        words = len(re.findall(pattern, moderated_content, re.IGNORECASE))
+        if words > 0:
+            score += 2.0 * words
+            replacements = "*" * len(word)
             moderated_content = re.sub(
-                pattern, "***", moderated_content, flags=re.IGNORECASE
+                pattern,
+                replacements,
+                moderated_content,
+                flags=re.IGNORECASE,
             )
     # URL check for links
-    url_matches = re.findall(URL_PATTERN, moderated_content, re.IGNORECASE)
-    if url_matches:
-        score += 2.0 * len(url_matches)
+    url_matches = len(re.findall(URL_PATTERN, moderated_content, re.IGNORECASE))
+    if url_matches > 0:
+        score += 2.0 * url_matches
         moderated_content = re.sub(
             URL_PATTERN, "[link removed]", moderated_content, flags=re.IGNORECASE
         )
@@ -1133,11 +1281,8 @@ def moderate_content(content):
     if len(letters) > 15:
         upper_count = sum(1 for c in letters if c.isupper())
         if (upper_count / len(letters)) > 0.70:
-            print(letters)
             score += 0.5
-            print("CAPS")
-            print(len(letters))
-    letters = []
+
     return moderated_content, score
 
 

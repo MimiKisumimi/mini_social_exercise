@@ -126,9 +126,11 @@
               <span class="text-muted"> No reactions yet </span>
             {% endif %}
         </div>
-
+        
         <!-- Add Reaction Dropdown Button -->
         {% if session.get('user_id') %}
+        <!-- Add reaction dropdown hidden removed if post is troll post -->
+        {% if not entry.post.is_troll %}
         <div class="dropdown">
           <button class="btn btn-sm btn-light text-dark rounded-circle m-0" type="button" id="dropdownMenuButton-{{ entry.post.id }}" data-bs-toggle="dropdown" aria-expanded="false" title="Add Reaction" >
             +
@@ -147,6 +149,7 @@
             {% endfor %}
           </ul>
         </div>
+        {% endif %}
         {% endif %}
       </div>
 
@@ -183,7 +186,26 @@
         <a href="/posts/{{ entry.post.id }}" class="btn btn-sm btn-light show-comments-btn">
           Show all comments
         </a>
+         <div>
+         <!-- Disables Mark as Troll button when post reaches 3 troll marks -->
+          {% if entry.post.is_troll %}
+            
+               {% elif session.get('user_id') and session.get('user_id') != entry.post.user_id %}
+            {% if entry.post.user_marked_troll %}
+              <button class="btn btn-sm btn-secondary me-2" disabled>Marked as Troll</button>
+            {% else %}
+              <form action="{{ url_for('mark_as_troll', post_id=entry.post.id) }}" method="POST" class="d-inline me-2">
+                <button type="submit" class="btn btn-sm btn-danger">Mark as Troll</button>
+              </form>
+            {% endif %}
+          {% endif %}
+          <!-- Replaces Add Comment button with notification if post is troll post -->
+      {% if not entry.post.is_troll %}
         <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addCommentModal-{{ entry.post.id }}">Add Comment</button>
+        {% else %}
+          <span class="text-muted small">Comments and reactions are disabled for this post.</span>
+        {% endif %}
+        </div>
       </div>
     </div>
   </div>
