@@ -8,6 +8,10 @@ import hashlib
 import re
 from datetime import datetime
 
+# sklearn for Assignment 3
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
 app = Flask(__name__)
 app.secret_key = "123456789"
 DATABASE = "database.sqlite"
@@ -674,16 +678,16 @@ def add_reaction():
         flash("You must be logged in to react.", "danger")
         return redirect(url_for("login"))
 
-    # Check if troll post, reactions are disabled for troll posts
-    if post_id and is_troll_post(post_id):
-        flash("Reactions are disabled for troll posts.", "danger")
-        return redirect(request.referrer or url_for("feed"))
-
     post_id = request.form.get("post_id")
     new_reaction_type = request.form.get("reaction")
 
     if not post_id or not new_reaction_type:
         flash("Invalid reaction request.", "warning")
+        return redirect(request.referrer or url_for("feed"))
+
+    # Check if troll post, reactions are disabled for troll posts
+    if post_id and is_troll_post(post_id):
+        flash("Reactions are disabled for troll posts.", "danger")
         return redirect(request.referrer or url_for("feed"))
 
     db = get_db()
@@ -1232,6 +1236,8 @@ def moderate_content(content):
             password: admin
     Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
+    if not content:
+        return "", 0.0
     moderated_content = content
     score = 0
 
@@ -1288,6 +1294,49 @@ def moderate_content(content):
 
 # Coding Assignment #3
 # Assignment 3.1
+def natural_language_processing_function(good_posts, potential_posts):
+
+    if not good_posts or not potential_posts:
+        return []
+
+    good_content = []
+    for p in good_posts:
+        if p["content"]:
+            good_content.append(p["content"])
+
+    potential_content = []
+    for p in potential_posts:
+        if p["content"]:
+            potential_content.append(p["content"])
+
+    # Convert post content to TF-IDF vectors
+    vectorizer = TfidfVectorizer(stop_words="english")
+    vectorizer.fit(good_content + potential_content)
+
+    good_tfidf = vectorizer.transform(good_content)
+    potential_tfidf = vectorizer.transform(potential_content)
+
+    # Cosine Similarity between all posts
+    similarity_matrix = cosine_similarity(good_tfidf, potential_tfidf)
+
+    # Get highest similarity scores
+    scores = similarity_matrix.max(axis=0)
+
+    # Pair each post with its score
+    scored_posts = []
+    for i in range(len(potential_posts)):
+        scored_posts.append((scores[i], i, potential_posts[i]))
+
+    scored_posts.sort(reverse=True)
+
+    # Top 5 highest-similarity posts
+    top_5 = []
+    for score, i, post in scored_posts[:5]:
+        top_5.append(post)
+
+    return top_5
+
+
 def recommend(user_id, filter_following):
     """
     Args:
@@ -1297,7 +1346,12 @@ def recommend(user_id, filter_following):
     Returns:
         A list of 5 recommended posts, in reverse-chronological order.
 
-    To test whether your recommendation algorithm works, let's pretend we like the DIY topic. Here are some users that often post DIY comment and a few example posts. Make sure your account did not engage with anything else. You should test your algorithm with these and see if your recommendation algorithm picks up on your interest in DIY and starts showing related content.
+    To test whether your recommendation algorithm works,
+    let's pretend we like the DIY topic.
+    Here are some users that often post DIY comment and a few example posts.
+    Make sure your account did not engage with anything else.
+    You should test your algorithm with these and see if your recommendation
+    algorithm picks up on your interest in DIY and starts showing related content.
 
     Users: @starboy99, @DancingDolphin, @blogger_bob
     Posts: 1810, 1875, 1880, 2113
@@ -1309,6 +1363,84 @@ def recommend(user_id, filter_following):
     """
 
     recommended_posts = {}
+    positive_and_followed = []
+
+    if filter_following:
+        # Extract posts of users that have been followed by user
+        followed_posts = query_db(
+            """
+                    SELECT p.id, p.content, u.id as user_id
+                    FROM posts p
+                    JOIN users u ON p.user_id = u.id
+                    JOIN follows f ON u.id = f.followed_id
+                    WHERE f.follower_id = ?
+                    ORDER BY p.created_at DESC
+                    """,
+            (user_id,),
+        )
+
+        unfollowed_posts = query_db(
+            """
+                SELECT p.id, p.content, u.id as user_id
+                FROM posts p
+                JOIN users u ON p.user_id = u.id
+                WHERE p.user_id NOT IN (SELECT followed_id FROM follows WHERE follower_id = ?)
+                AND p.user_id != ?
+                ORDER BY p.created_at DESC
+            """,
+            (user_id, user_id),
+        )
+        recommended_posts = natural_language_processing_function(
+            followed_posts, unfollowed_posts
+        )
+
+    else:
+        # Extract post that have been positively reacted by user
+        positive_posts = query_db(
+            """
+                SELECT p.id, p.content,
+                        u.id as user_id, r.reaction_type, p.created_at, u.username
+                FROM posts p
+                JOIN users u ON p.user_id = u.id
+                JOIN reactions r ON p.id = r.post_id
+                WHERE r.user_id = ? AND r.reaction_type IN ('like', 'love', 'laugh')
+                ORDER BY p.created_at DESC
+                """,
+            (user_id,),
+        )
+
+        positive_and_followed.extend(positive_posts)
+
+        # Extract posts of users that have been followed by user
+        followed_posts = query_db(
+            """
+                SELECT p.id, p.content, u.id as user_id, p.created_at, u.username
+                FROM posts p
+                JOIN users u ON p.user_id = u.id
+                JOIN follows f ON u.id = f.followed_id
+                WHERE f.follower_id = ?
+                ORDER BY p.created_at DESC
+                """,
+            (user_id,),
+        )
+        positive_and_followed.extend(followed_posts)
+
+        unfollowed_unliked_posts = query_db(
+            """
+            SELECT p.id, p.content, p.created_at, p.status, p.post_type, u.username, u.id as user_id
+            FROM posts p
+            JOIN users u ON p.user_id = u.id
+            WHERE p.user_id NOT IN (SELECT followed_id FROM follows WHERE follower_id = ?)
+            AND p.id NOT IN (SELECT post_id FROM reactions WHERE user_id = ? AND reaction_type IN ('like', 'love', 'laugh'))
+            AND p.user_id != ?
+            ORDER BY p.created_at DESC
+            """,
+            (user_id, user_id, user_id),
+        )
+
+        recommended_posts = natural_language_processing_function(
+            positive_and_followed, unfollowed_unliked_posts
+        )
 
     return recommended_posts
 
