@@ -9,7 +9,13 @@
     <div class="row g-0 align-items-center">
       <div class="col-md-12">
         <div class="card-body">
-          <h2 class="card-title">{{ user_display(user.username) }}</h2>
+          <h2 class="card-title">
+            {{ user_display(user.username) }}
+            {% if user.is_verified %}
+              <span class="badge bg-primary rounded-pill fs-6 ms-2" title="Verified Creator">✓ Verified</span>
+            {% endif %}
+          </h2>
+          
           <p class="card-text text-muted mb-3">
             <strong>Location:</strong> {{ user.location or "N/A" }}<br>
             <strong>Birthdate:</strong> {{ user.birthdate or "N/A" }}<br>
@@ -32,17 +38,27 @@
             </div>
           {% endif %}
 
-          <div class="mt-4 d-flex">
-            <div class="me-4">
-              <a href="/u/{{ user.username }}/followers" class="text-decoration-none text-dark">
-                <strong>{{ followers_count }}</strong> Followers
-              </a>
+          <div class="mt-4 d-flex justify-content-between align-items-center">
+            <div class="d-flex">
+              <div class="me-4">
+                <a href="/u/{{ user.username }}/followers" class="text-decoration-none text-dark">
+                  <strong>{{ followers_count }}</strong> Followers
+                </a>
+              </div>
+              <div>
+                <a href="/u/{{ user.username }}/following" class="text-decoration-none text-dark">
+                  <strong>{{ following_count }}</strong> Following
+                </a>
+              </div>
             </div>
-            <div>
-              <a href="/u/{{ user.username }}/following" class="text-decoration-none text-dark">
-                <strong>{{ following_count }}</strong> Following
-              </a>
-            </div>
+
+            {% if session.get('user_id') == user.id %}
+              <form action="{{ url_for('toggle_verified', user_id=user.id) }}" method="POST" class="m-0">
+                <button type="submit" class="btn btn-primary btn-sm">
+                  {% if user.is_verified %}Revoke My Verification{% else %}Verify My Account{% endif %}
+                </button>
+              </form>
+            {% endif %}
           </div>
         </div>
       </div>

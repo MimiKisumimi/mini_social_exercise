@@ -247,11 +247,26 @@ def feed():
                 "comments": comments_moderated,
             }
         )
-
+    # Coding Assignment #3 query to find 5 verified users that
+    # have most followers
+    # AI was used to from the  query
+    top_verified_users = query_db(
+        """
+        SELECT u.id, u.username, COUNT(f.follower_id) as follower_count
+        FROM users u
+        LEFT JOIN follows f ON u.id = f.followed_id
+        WHERE u.is_verified = 1
+        GROUP BY u.id
+        ORDER BY follower_count DESC, u.username ASC
+        LIMIT ?
+        """,
+        (5,),
+    )
     #  4. Render Template with Pagination Info
     return render_template(
         "feed.html.j2",
         posts=posts_data,
+        top_verified_users=top_verified_users,
         current_sort=sort,
         current_show=show,
         page=page,  # Pass current page number
@@ -1293,7 +1308,57 @@ def moderate_content(content):
 
 
 # Coding Assignment #3
+
+# Design Claim 7 Recruiting materials that present reasons to join and endorsements
+# by credible sources and sites attract people who are actively searching for and evaluat-
+# ing communities.
+
+# Design Claim 8 Recruiting materials that present attractive surface features and
+# endorsements by celebrities attract people who are casually assessing communities
+
+
+# Allows users to toggle their verification status
+# (no actual transaction nor real verification process in this version)
+# AI was used to make the HTML and CSS style for this functionality
+@app.route("/u/<int:user_id>/toggle_verified", methods=["POST"])
+def toggle_verified(user_id):
+
+    current_user_id = session.get("user_id")
+    if not current_user_id:
+        flash("You must be logged in to verify.", "danger")
+        return redirect(url_for("login"))
+
+    if current_user_id != user_id:
+        flash("You can not change verification of another user.", "danger")
+        return redirect(url_for("feed"))
+
+    user = query_db("SELECT is_verified FROM users WHERE id = ?", (user_id,), one=True)
+    if not user:
+        return redirect(url_for("feed"))
+
+    if user["is_verified"] == 0:
+        new_status = 1
+    else:
+        new_status = 0
+
+    db = get_db()
+    db.execute("UPDATE users SET is_verified = ? WHERE id = ?", (new_status, user_id))
+    db.commit()
+    flash(
+        f"Verification status updated.",
+        "success",
+    )
+    return redirect(request.referrer or url_for("feed"))
+
+
 # Assignment 3.1
+# Uses sklearn vectorizer and cosine-similarity
+# to find posts that match followed or followed and liked post content
+# from remaining posts
+
+# AI was used to get the extraction for loops right
+
+
 def natural_language_processing_function(good_posts, potential_posts):
 
     if not good_posts or not potential_posts:
@@ -1329,14 +1394,27 @@ def natural_language_processing_function(good_posts, potential_posts):
 
     scored_posts.sort(reverse=True)
 
-    # Top 5 highest-similarity posts
-    top_5 = []
+    # Top 5 highest-similarity posts with dates
+    top_5_date = []
     for score, i, post in scored_posts[:5]:
+        top_5_date.append((str(post["created_at"]), i, post))
+
+    top_5_date.sort(reverse=True)
+
+    # Extract the 5 posts
+    top_5 = []
+    for created_at, i, post in top_5_date:
         top_5.append(post)
 
     return top_5
 
 
+# Recommend had contradicting/vague task definitions in assignment document and in args description (discussed in text delivery)
+
+
+# The function uses posts that the user has liked and compares them to either followed and not liked posts
+# or to all unliked posts, depending on if is following filtered. The unliked posts simulate new/unnoticed posts
+# AI was used for query generation
 def recommend(user_id, filter_following):
     """
     Args:
@@ -1362,44 +1440,52 @@ def recommend(user_id, filter_following):
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
 
+    if not user_id:
+        return []
     recommended_posts = {}
-    positive_and_followed = []
 
     if filter_following:
-        # Extract posts of users that have been followed by user
-        followed_posts = query_db(
+        # Extract positively reacted posts
+        # Recommend those that are not yet liked
+        positive_posts = query_db(
             """
-                    SELECT p.id, p.content, u.id as user_id
+                        SELECT p.id, p.content,
+                                u.id as user_id, r.reaction_type, p.created_at, p.status, p.post_type, u.username
+                        FROM posts p
+                        JOIN users u ON p.user_id = u.id
+                        JOIN reactions r ON p.id = r.post_id
+                        WHERE r.user_id = ? AND r.reaction_type IN ('like', 'love', 'laugh')
+                        ORDER BY p.created_at DESC
+                        """,
+            (user_id,),
+        )
+        # Extract post of followed users that have not been positively reacted by user
+        followed_not_liked_posts = query_db(
+            """
+                    SELECT p.id, p.content, u.id as user_id, p.created_at, p.status, p.post_type, u.username
                     FROM posts p
                     JOIN users u ON p.user_id = u.id
                     JOIN follows f ON u.id = f.followed_id
                     WHERE f.follower_id = ?
+                    
+                      AND p.id NOT IN (SELECT post_id FROM reactions WHERE user_id = ? AND reaction_type IN ('like', 'love', 'laugh'))
+                      AND p.user_id != ?
                     ORDER BY p.created_at DESC
                     """,
-            (user_id,),
+            (user_id, user_id, user_id),
         )
 
-        unfollowed_posts = query_db(
-            """
-                SELECT p.id, p.content, u.id as user_id
-                FROM posts p
-                JOIN users u ON p.user_id = u.id
-                WHERE p.user_id NOT IN (SELECT followed_id FROM follows WHERE follower_id = ?)
-                AND p.user_id != ?
-                ORDER BY p.created_at DESC
-            """,
-            (user_id, user_id),
-        )
         recommended_posts = natural_language_processing_function(
-            followed_posts, unfollowed_posts
+            positive_posts, followed_not_liked_posts
         )
 
     else:
         # Extract post that have been positively reacted by user
+        # Recommend those that are not yet liked
         positive_posts = query_db(
             """
                 SELECT p.id, p.content,
-                        u.id as user_id, r.reaction_type, p.created_at, u.username
+                        u.id as user_id, r.reaction_type, p.created_at, p.status, p.post_type, u.username
                 FROM posts p
                 JOIN users u ON p.user_id = u.id
                 JOIN reactions r ON p.id = r.post_id
@@ -1408,38 +1494,20 @@ def recommend(user_id, filter_following):
                 """,
             (user_id,),
         )
-
-        positive_and_followed.extend(positive_posts)
-
-        # Extract posts of users that have been followed by user
-        followed_posts = query_db(
-            """
-                SELECT p.id, p.content, u.id as user_id, p.created_at, u.username
-                FROM posts p
-                JOIN users u ON p.user_id = u.id
-                JOIN follows f ON u.id = f.followed_id
-                WHERE f.follower_id = ?
-                ORDER BY p.created_at DESC
-                """,
-            (user_id,),
-        )
-        positive_and_followed.extend(followed_posts)
-
-        unfollowed_unliked_posts = query_db(
+        # Extract post that have not been positively reacted by user
+        unliked_posts = query_db(
             """
             SELECT p.id, p.content, p.created_at, p.status, p.post_type, u.username, u.id as user_id
             FROM posts p
             JOIN users u ON p.user_id = u.id
-            WHERE p.user_id NOT IN (SELECT followed_id FROM follows WHERE follower_id = ?)
-            AND p.id NOT IN (SELECT post_id FROM reactions WHERE user_id = ? AND reaction_type IN ('like', 'love', 'laugh'))
-            AND p.user_id != ?
+            WHERE p.id NOT IN (SELECT post_id FROM reactions WHERE user_id = ? AND reaction_type IN ('like', 'love', 'laugh'))
+              AND p.user_id != ?
             ORDER BY p.created_at DESC
             """,
-            (user_id, user_id, user_id),
+            (user_id, user_id),
         )
-
         recommended_posts = natural_language_processing_function(
-            positive_and_followed, unfollowed_unliked_posts
+            positive_posts, unliked_posts
         )
 
     return recommended_posts
